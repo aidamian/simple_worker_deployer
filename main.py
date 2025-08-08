@@ -75,6 +75,7 @@ class ContainerManager:
     self.stop_container()  # Stop and remove container if running
     # After stopping, set the event to signal threads to exit if needed
     self._stop_event.set()
+    return
 
   def start_container(self):
     """Start the Docker container and run the git clone + build commands inside it."""
