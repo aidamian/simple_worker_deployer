@@ -20,6 +20,9 @@ class ContainerManager:
     poll_interval=10,
     env={},
 ):
+    self.env = env  # Environment variables to pass to the container
+    self.done = False  # Flag to indicate when to stop the main loop
+    self.current_commit = None  # Track the current commit SHA
     self.repo_url = repo_url
     self.build_and_run_commands = build_and_run_commands
     self.image = image
@@ -62,11 +65,25 @@ class ContainerManager:
     # Ensure container is cleaned up on program exit (signal handling)
     signal.signal(signal.SIGINT, self._handle_signal)
     signal.signal(signal.SIGTERM, self._handle_signal)
+    return
+  
     
-  def P(self, s, **kwargs):
-    """Prints debug information with a prefix."""
+  def P(self, s, color='w', **kwargs):
+    """Prints in color (white, dark, blue, red, green, yellow) debug information with a prefix."""
+    COLORS = {
+      'w': '\033[0m',  # white
+      'd': '\033[90m',  # dark gray
+      'b': '\033[94m',  # blue
+      'r': '\033[91m',  # red
+      'g': '\033[92m',  # green
+      'y': '\033[93m',  # yellow
+    }
+    if color not in COLORS:
+      color = 'w'
+    s = str(s)  # Ensure s is a string
+    s = f"{COLORS[color]}{s}\033[0m"  #
     kwargs['flush'] = True
-    print("[DEBUG] " + s, **kwargs)
+    print(s, **kwargs)
     return
 
   def _handle_signal(self, signum, frame):
@@ -75,7 +92,10 @@ class ContainerManager:
     self.stop_container()  # Stop and remove container if running
     # After stopping, set the event to signal threads to exit if needed
     self._stop_event.set()
+    self.done = True  # Set done flag to exit main loop
+    self.P("[INFO] Exiting gracefully...")
     return
+
 
   def start_container(self):
     """Start the Docker container and run the git clone + build commands inside it."""
@@ -99,6 +119,20 @@ class ContainerManager:
     # Start a background thread to stream container logs
     self.log_thread = threading.Thread(target=self._stream_logs, daemon=True)
     self.log_thread.start()
+    return self.container
+
+
+  def restart_from_scratch(self):
+    """Stop the current container and start a new one from scratch."""
+    self.P("[INFO] Restarting container from scratch...")
+    self.stop_container()
+    self._stop_event.set()  # signal log thread to stop if running
+    if self.log_thread:
+      self.log_thread.join(timeout=5)
+    # Start a new container with the updated code
+    self._stop_event.clear()  # reset stop flag for new log thread
+    return self.start_container()
+
 
   def _stream_logs(self):
     """Stream the container's stdout/stderr to the host stdout in real-time."""
@@ -115,12 +149,14 @@ class ContainerManager:
         except Exception:
           log_str = str(log_bytes)
         # Print each log line with a prefix to distinguish container output
-        self.P(f"[CONTAINER] {log_str}", end="")
+        self.P(f"[CONTAINER] {log_str}", color='d', end='')  # dark gray for container logs
         # If stop event is set, break out to stop streaming
         if self._stop_event.is_set():
           break
     except Exception as e:
       self.P(f"[ERROR] Exception while streaming logs: {e}")
+    return
+
 
   def poll_endpoint(self):
     """Poll the container's /edgenode endpoint and print the response."""
@@ -135,6 +171,8 @@ class ContainerManager:
       self.P(f"[INFO] GET {url} -> {status}, Response: {text}")
     except requests.RequestException as e:
       self.P(f"[INFO] GET {url} failed: {e}")
+    return
+  
 
   def get_latest_commit(self):
     """Fetch the latest commit SHA of the repository's monitored branch via GitHub API."""
@@ -149,7 +187,8 @@ class ContainerManager:
       return latest_sha
     except Exception as e:
       self.P(f"[WARN] Failed to fetch latest commit: {e}")
-      return None
+    return None
+
 
   def stop_container(self):
     """Stop and remove the Docker container if it is running."""
@@ -165,6 +204,8 @@ class ContainerManager:
         self.P(f"[WARN] Error removing container: {e}")
       finally:
         self.container = None
+    return
+
 
   def run(self):
     """Run the container and monitor it, restarting on new commits and handling graceful shutdown."""
@@ -176,26 +217,20 @@ class ContainerManager:
     try:
       # Initial container launch
       self.start_container()
-      running = True
-      while running:
+      self.done = False
+      while not self.done:
         # Sleep for the poll interval
         time.sleep(self.poll_interval)
         # Poll the application endpoint
         self.poll_endpoint()
         # Check for new commits in the repository
         latest_commit = self.get_latest_commit()
-        if latest_commit and current_commit and latest_commit != current_commit:
-          self.P(f"[INFO] New commit detected ({latest_commit[:7]} != {current_commit[:7]}). Restarting container...")
+        if latest_commit and self.current_commit and latest_commit != self.current_commit:
+          self.P(f"[INFO] New commit detected ({latest_commit[:7]} != {self.current_commit[:7]}). Restarting container...")
           # Update current_commit to the new one
-          current_commit = latest_commit
+          self.current_commit = latest_commit
           # Stop and remove current container, and end its log thread
-          self.stop_container()
-          self._stop_event.set()  # signal log thread to stop if running
-          if self.log_thread:
-            self.log_thread.join(timeout=5)
-          # Start a new container with the updated code
-          self._stop_event.clear()  # reset stop flag for new log thread
-          self.start_container()
+          self.restart_from_scratch()
           continue  # continue monitoring with new container
         # If container has stopped on its own (unexpectedly), break out to end the loop
         if self.container:
@@ -204,7 +239,7 @@ class ContainerManager:
           if self.container.status != "running":
             self.P("[ERROR] Container stopped unexpectedly (exit code {}).".format(
                   self.container.attrs.get("State", {}).get("ExitCode")))
-            running = False
+            self.done = True
     except KeyboardInterrupt:
       # Handle Ctrl+C gracefully (SIGINT handled by signal handler too)
       self.P("\n[INFO] KeyboardInterrupt received. Shutting down...")
@@ -217,11 +252,14 @@ class ContainerManager:
       if self.log_thread:
         self.log_thread.join(timeout=5)
       self.P("[INFO] Container manager has exited.")
+    return
+
 
 # Usage example (replace with actual repo URL with credentials):
 if __name__ == "__main__":
   username = os.environ.get("WORKER_GIT_USERNAME")
   pat = os.environ.get("WORKER_GIT_PAT")
+  print(f"[INFO] Using GitHub credentials: {username} (PAT length: {len(pat) if pat else 0})") 
   # https://github.com/aidamian/private-worker-app.git
   repo = f"https://{username}:{pat}@github.com/aidamian/private-worker-app.git"
   commands = ["npm install", "npm start"]
