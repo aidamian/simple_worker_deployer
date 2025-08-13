@@ -147,16 +147,16 @@ class ContainerManager:
     """Start container, then build and run the app, recording memory usage before and after."""
     container = self.start_container()
     # Memory usage before installing the app
-    mem_before = self._get_container_memory()
-    self.P(f"[INFO] Container memory usage before build: {mem_before} bytes")
+    mem_before_mb = self._get_container_memory() / (1024 ** 2)
 
     # Execute build and run commands
     self.execute_build_and_run_cmds()
 
     # Allow some time for the app to start before measuring again
     time.sleep(1)
-    mem_after = self._get_container_memory()
-    self.P(f"[INFO] Container memory usage after build/run: {mem_after} bytes")
+    mem_after_mb = self._get_container_memory() / (1024 ** 2)
+    self.P(f"[INFO] Container memory usage before build/run: {mem_before_mb:>5.0f} MB")
+    self.P(f"[INFO] Container memory usage after build/run:  {mem_after_mb:>5.0f} MB")
 
     return container
 
@@ -298,15 +298,18 @@ class ContainerManager:
 if __name__ == "__main__":
   username = os.environ.get("WORKER_GIT_USERNAME")
   pat = os.environ.get("WORKER_GIT_PAT")
-  print(f"[INFO] Using GitHub credentials: {username} (PAT length: {len(pat) if pat else 0})") 
-  # https://github.com/aidamian/private-worker-app.git
-  repo = f"https://{username}:{pat}@github.com/aidamian/private-worker-app.git"
-  commands = ["npm install", "npm start"]
-  manager = ContainerManager(
-    repo_url=repo, 
-    build_and_run_commands=commands, 
-    image="node:18", 
-    poll_interval=10,
-    env={"EE_HOST_ID": "test1", "EE_HOST_ADDR": "0xai", "EE_HOST_ETH_ADDR": "0xBEEF"}    
-  )
-  manager.run()
+  if len(pat) < 10:
+    print("[ERROR] PAT is too short!")
+  else:
+    print(f"[INFO] Using GitHub credentials: {username} (PAT length: {len(pat) if pat else 0})") 
+    # https://github.com/aidamian/private-worker-app.git
+    repo = f"https://{username}:{pat}@github.com/aidamian/private-worker-app.git"
+    commands = ["npm install", "npm start"]
+    manager = ContainerManager(
+      repo_url=repo, 
+      build_and_run_commands=commands, 
+      image="node:18", 
+      poll_interval=10,
+      env={"EE_HOST_ID": "test1", "EE_HOST_ADDR": "0xai", "EE_HOST_ETH_ADDR": "0xBEEF"}    
+    )
+    manager.run()
