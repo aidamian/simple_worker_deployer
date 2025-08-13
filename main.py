@@ -98,28 +98,67 @@ class ContainerManager:
 
 
   def start_container(self):
-    """Start the Docker container and run the git clone + build commands inside it."""
-    # Build the shell command to run inside container
-    # Clone the repo into /app and then run the build and start commands in /app
+    """Start the Docker container without running build or app commands."""
+    self.P(f"[INFO] Launching container with image '{self.image}'...")
+    # Run the base container in detached mode with a long running sleep so it stays alive
+    self.container = self.docker_client.containers.run(
+      self.image,
+      command=["sh", "-c", "while true; do sleep 3600; done"],
+      detach=True,
+      ports={"3000/tcp": 3000},
+      environment=self.env,
+    )
+    self.P(f"[INFO] Container started (ID: {self.container.short_id}).")
+    return self.container
+
+
+  def execute_build_and_run_cmds(self):
+    """Clone the repository and execute build/run commands inside the running container."""
+    if not self.container:
+      raise RuntimeError("Container must be started before executing commands")
+
     shell_cmd = (
       f"git clone {self.repo_url} /app && cd /app && " +
       " && ".join(self.build_and_run_commands)
     )
-    self.P(f"[INFO] Launching container with image '{self.image}'...")
-    # Run the container in detached mode, with port 3000 published to host
-    # Using sh -c to run the shell command
     self.P("Running command in container: {}".format(shell_cmd))
-    self.container = self.docker_client.containers.run(
-      self.image, command=["sh", "-c", shell_cmd],
-      detach=True, ports={"3000/tcp": 3000}, 
-      environment=self.env
-    )
-    self.P(f"[INFO] Container started (ID: {self.container.short_id}). Cloning repo and starting app...")
+    # Execute the build and run commands inside the container and detach so the app keeps running
+    self.container.exec_run(["sh", "-c", shell_cmd], detach=True)
 
     # Start a background thread to stream container logs
     self.log_thread = threading.Thread(target=self._stream_logs, daemon=True)
     self.log_thread.start()
-    return self.container
+    return
+
+
+  def _get_container_memory(self):
+    """Return current memory usage of the container in bytes."""
+    if not self.container:
+      return 0
+    try:
+      stats = self.container.stats(stream=False)
+      return stats.get("memory_stats", {}).get("usage", 0)
+    except Exception as e:
+      self.P(f"[WARN] Could not fetch memory usage: {e}")
+      return 0
+
+
+  def launch_container_app(self):
+    """Start container, then build and run the app, recording memory usage before and after."""
+    container = self.start_container()
+    # Memory usage before installing the app
+    mem_before = self._get_container_memory()
+    self.P(f"[INFO] Container memory usage before build: {mem_before} bytes")
+
+    # Execute build and run commands
+    self.execute_build_and_run_cmds()
+
+    # Allow some time for the app to start before measuring again
+    time.sleep(1)
+    mem_after = self._get_container_memory()
+    self.P(f"[INFO] Container memory usage after build/run: {mem_after} bytes")
+
+    return container
 
 
   def restart_from_scratch(self):
@@ -131,7 +170,7 @@ class ContainerManager:
       self.log_thread.join(timeout=5)
     # Start a new container with the updated code
     self._stop_event.clear()  # reset stop flag for new log thread
-    return self.start_container()
+    return self.launch_container_app()
 
 
   def _stream_logs(self):
@@ -216,7 +255,7 @@ class ContainerManager:
 
     try:
       # Initial container launch
-      self.start_container()
+      self.launch_container_app()
       self.done = False
       while not self.done:
         # Sleep for the poll interval
