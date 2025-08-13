@@ -80,7 +80,7 @@ class ContainerManager:
     }
     if color not in COLORS:
       color = 'w'
-    s = str(s)  # Ensure s is a string
+    s = '[INFO] ' + str(s)  # Ensure s is a string
     s = f"{COLORS[color]}{s}\033[0m"  #
     kwargs['flush'] = True
     print(s, **kwargs)
@@ -88,18 +88,18 @@ class ContainerManager:
 
   def _handle_signal(self, signum, frame):
     """Signal handler for graceful termination."""
-    self.P("\n[INFO] Termination signal received (signal {}). Stopping container...".format(signum))
+    self.P("\nTermination signal received (signal {}). Stopping container...".format(signum))
     self.stop_container()  # Stop and remove container if running
     # After stopping, set the event to signal threads to exit if needed
     self._stop_event.set()
     self.done = True  # Set done flag to exit main loop
-    self.P("[INFO] Exiting gracefully...")
+    self.P("Exiting gracefully...")
     return
 
 
   def start_container(self):
     """Start the Docker container without running build or app commands."""
-    self.P(f"[INFO] Launching container with image '{self.image}'...")
+    self.P(f"Launching container with image '{self.image}'...")
     # Run the base container in detached mode with a long running sleep so it stays alive
     self.container = self.docker_client.containers.run(
       self.image,
@@ -108,7 +108,7 @@ class ContainerManager:
       ports={"3000/tcp": 3000},
       environment=self.env,
     )
-    self.P(f"[INFO] Container started (ID: {self.container.short_id}).")
+    self.P(f"Container started (ID: {self.container.short_id}).")
     return self.container
 
 
@@ -155,15 +155,15 @@ class ContainerManager:
     # Allow some time for the app to start before measuring again
     time.sleep(1)
     mem_after_mb = self._get_container_memory() / (1024 ** 2)
-    self.P(f"[INFO] Container memory usage before build/run: {mem_before_mb:>5.0f} MB")
-    self.P(f"[INFO] Container memory usage after build/run:  {mem_after_mb:>5.0f} MB")
+    self.P(f"Container memory usage before build/run: {mem_before_mb:>5.0f} MB")
+    self.P(f"Container memory usage after build/run:  {mem_after_mb:>5.0f} MB")
 
     return container
 
 
   def restart_from_scratch(self):
     """Stop the current container and start a new one from scratch."""
-    self.P("[INFO] Restarting container from scratch...")
+    self.P("Restarting container from scratch...")
     self.stop_container()
     self._stop_event.set()  # signal log thread to stop if running
     if self.log_thread:
@@ -207,9 +207,9 @@ class ContainerManager:
       text = resp.text
       if len(text) > 200:
         text = text[:200] + "..." 
-      self.P(f"[INFO] GET {url} -> {status}, Response: {text}")
+      self.P(f"GET {url} -> {status}, Response: {text}")
     except requests.RequestException as e:
-      self.P(f"[INFO] GET {url} failed: {e}")
+      self.P(f"GET {url} failed: {e}")
     return
   
 
@@ -248,10 +248,10 @@ class ContainerManager:
 
   def run(self):
     """Run the container and monitor it, restarting on new commits and handling graceful shutdown."""
-    self.P("[INFO] Starting container manager...")
+    self.P("Starting container manager...")
     current_commit = self.get_latest_commit()
     if current_commit:
-      self.P(f"[INFO] Latest commit on {self.branch}: {current_commit}")
+      self.P(f"Latest commit on {self.branch}: {current_commit}")
 
     try:
       # Initial container launch
@@ -265,7 +265,7 @@ class ContainerManager:
         # Check for new commits in the repository
         latest_commit = self.get_latest_commit()
         if latest_commit and self.current_commit and latest_commit != self.current_commit:
-          self.P(f"[INFO] New commit detected ({latest_commit[:7]} != {self.current_commit[:7]}). Restarting container...")
+          self.P(f"New commit detected ({latest_commit[:7]} != {self.current_commit[:7]}). Restarting container...")
           # Update current_commit to the new one
           self.current_commit = latest_commit
           # Stop and remove current container, and end its log thread
@@ -281,7 +281,7 @@ class ContainerManager:
             self.done = True
     except KeyboardInterrupt:
       # Handle Ctrl+C gracefully (SIGINT handled by signal handler too)
-      self.P("\n[INFO] KeyboardInterrupt received. Shutting down...")
+      self.P("\nKeyboardInterrupt received. Shutting down...")
       # (The signal handler will also invoke stop_container)
     finally:
       # Ensure container is cleaned up if still running
@@ -290,7 +290,7 @@ class ContainerManager:
       self._stop_event.set()
       if self.log_thread:
         self.log_thread.join(timeout=5)
-      self.P("[INFO] Container manager has exited.")
+      self.P("Container manager has exited.")
     return
 
 
@@ -301,7 +301,7 @@ if __name__ == "__main__":
   if len(pat) < 10:
     print("[ERROR] PAT is too short!")
   else:
-    print(f"[INFO] Using GitHub credentials: {username} (PAT length: {len(pat) if pat else 0})") 
+    print(f"Using GitHub credentials: {username} (PAT length: {len(pat) if pat else 0})") 
     # https://github.com/aidamian/private-worker-app.git
     repo = f"https://{username}:{pat}@github.com/aidamian/private-worker-app.git"
     commands = ["npm install", "npm start"]
