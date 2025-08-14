@@ -80,6 +80,9 @@ class ContainerManager:
       'g': '\033[92m',  # green
       'y': '\033[93m',  # yellow
     }
+    # first clear s from any color codes
+    for code in COLORS.values():
+      s = s.replace(code, "")
     if color not in COLORS:
       color = 'w'
     s = '[INFO] ' + str(s)  # Ensure s is a string
@@ -212,7 +215,7 @@ class ContainerManager:
       # Truncate response text if it's very long
       text = resp.text
       data = resp.json() if resp.status_code == 200 else {}
-      keys = data.keys() if isinstance(data, dict) else []
+      keys = list(data.keys()) if isinstance(data, dict) else []
       info = ""
       if len(keys) > 0:        
         for i in range(len(keys)):
