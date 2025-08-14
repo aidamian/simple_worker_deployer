@@ -122,11 +122,14 @@ class ContainerManager:
       " && ".join(self.build_and_run_commands)
     )
     self.P("Running command in container: {}".format(shell_cmd))
-    # Execute the build and run commands inside the container and detach so the app keeps running
-    self.container.exec_run(["sh", "-c", shell_cmd], detach=True)
-
-    # Start a background thread to stream container logs
-    self.log_thread = threading.Thread(target=self._stream_logs, daemon=True)
+    # Execute the command and obtain a streaming iterator without blocking
+    exec_result = self.container.exec_run(["sh", "-c", shell_cmd], stream=True, detach=False)
+    # Consume the iterator in a background thread so the main thread stays free
+    self.log_thread = threading.Thread(
+      target=self._stream_logs,
+      args=(exec_result.output,),
+      daemon=True,
+    )
     self.log_thread.start()
     return
 
@@ -173,23 +176,19 @@ class ContainerManager:
     return self.launch_container_app()
 
 
-  def _stream_logs(self):
-    """Stream the container's stdout/stderr to the host stdout in real-time."""
-    if not self.container:
+  def _stream_logs(self, log_stream):
+    """Consume a log iterator from exec_run and print its output."""
+    if not log_stream:
       return
-    # Attach to logs (stdout+stderr) and stream line by line
     try:
-      for log_bytes in self.container.logs(stream=True, stdout=True, stderr=True, follow=True):
+      for log_bytes in log_stream:
         if log_bytes is None:
           break
-        # Decode bytes to string
         try:
           log_str = log_bytes.decode("utf-8", errors="replace")
         except Exception:
           log_str = str(log_bytes)
-        # Print each log line with a prefix to distinguish container output
-        self.P(f"[CONTAINER] {log_str}", color='d', end='')  # dark gray for container logs
-        # If stop event is set, break out to stop streaming
+        self.P(f"[CONTAINER] {log_str}", color='d', end='')
         if self._stop_event.is_set():
           break
     except Exception as e:
