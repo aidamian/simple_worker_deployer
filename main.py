@@ -4,6 +4,7 @@ import requests
 import threading
 import time
 import signal
+import json
 from urllib.parse import urlparse
 
 class ContainerManager:
@@ -47,13 +48,12 @@ class ContainerManager:
     self.branch = None
     if self.repo_owner and self.repo_name:
       try:
-        api_url = f"https://api.github.com/repos/{self.repo_owner}/{self.repo_name}"
-        headers = {"Authorization": f"token {self.git_token}"} if self.git_token else {}
-        resp = requests.get(api_url, headers=headers, timeout=5)
-        if resp.status_code == 200:
-          data = resp.json()
+        resp = self.get_latest_commit(return_data=True)
+        if resp is not None:
+          _, data = resp
+          self.P(f"Repository info:\n {json.dumps(data, indent=2)}", color='b')
           self.branch = data.get("default_branch", None)
-          self.P(f"Default branch for {self.repo_owner}/{self.repo_name} is '{self.branch}'")
+          self.P(f"Default branch for {self.repo_owner}/{self.repo_name} is '{self.branch}'", color='y')          
       except Exception as e:
         self.P(f"[WARN] Could not determine default branch: {e}")
     if not self.branch:
@@ -233,11 +233,14 @@ class ContainerManager:
     return
   
 
-  def get_latest_commit(self):
+  def get_latest_commit(self, return_data=False):
     """Fetch the latest commit SHA of the repository's monitored branch via GitHub API."""
-    if not self.repo_owner or not self.repo_name or not self.branch:
+    if not self.repo_owner or not self.repo_name:
       return None
-    api_url = f"https://api.github.com/repos/{self.repo_owner}/{self.repo_name}/branches/{self.branch}"
+    if self.branch is None:
+      api_url = f"https://api.github.com/repos/{self.repo_owner}/{self.repo_name}"
+    else:
+      api_url = f"https://api.github.com/repos/{self.repo_owner}/{self.repo_name}/branches/{self.branch}"
     headers = {"Authorization": f"token {self.git_token}"} if self.git_token else {}
     try:
       self.P(f"Commit check: {api_url}", color='b')
@@ -246,6 +249,8 @@ class ContainerManager:
       if resp.status_code != 200:
         self.P(f"[ERROR] Failed to fetch latest commit: {resp.text}", color='r') 
       latest_sha = data.get("commit", {}).get("sha", None)
+      if return_data:
+        return latest_sha, data
       return latest_sha
     except Exception as e:
       self.P(f"[WARN] Failed to fetch latest commit: {e}", color='r')
@@ -272,9 +277,9 @@ class ContainerManager:
   def run(self):
     """Run the container and monitor it, restarting on new commits and handling graceful shutdown."""
     self.P("Starting container manager...")
-    current_commit = self.get_latest_commit()
-    if current_commit:
-      self.P(f"Latest commit on {self.branch}: {current_commit}")
+    self.current_commit = self.get_latest_commit()
+    if self.current_commit:
+      self.P(f"Latest commit on {self.branch}: {self.current_commit}")
 
     try:
       # Initial container launch
@@ -294,6 +299,8 @@ class ContainerManager:
           # Stop and remove current container, and end its log thread
           self.restart_from_scratch()
           continue  # continue monitoring with new container
+        elif latest_commit:
+          self.P(f"Latest commit on {self.branch}: {latest_commit} vs {self.current_commit}")
         # If container has stopped on its own (unexpectedly), break out to end the loop
         if self.container:
           # Refresh container status
