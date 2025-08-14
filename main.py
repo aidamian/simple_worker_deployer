@@ -17,16 +17,17 @@ class ContainerManager:
     repo_url, 
     build_and_run_commands, 
     image="node:18", 
-    poll_interval=10,
+    poll_interval=30,
     env={},
 ):
     self.env = env  # Environment variables to pass to the container
     self.done = False  # Flag to indicate when to stop the main loop
-    self.current_commit = None  # Track the current commit SHA
+    self.current_commit = None  # Track the current commit SHA  
     self.repo_url = repo_url
     self.build_and_run_commands = build_and_run_commands
     self.image = image
     self.poll_interval = poll_interval
+    self.poll_count = 0
     self.docker_client = docker.from_env()
     # Parse repo information for commit checking
     parsed = urlparse(repo_url)
@@ -52,6 +53,7 @@ class ContainerManager:
         if resp.status_code == 200:
           data = resp.json()
           self.branch = data.get("default_branch", None)
+          self.P(f"Default branch for {self.repo_owner}/{self.repo_name} is '{self.branch}'")
       except Exception as e:
         self.P(f"[WARN] Could not determine default branch: {e}")
     if not self.branch:
@@ -85,6 +87,7 @@ class ContainerManager:
     kwargs['flush'] = True
     print(s, **kwargs)
     return
+
 
   def _handle_signal(self, signum, frame):
     """Signal handler for graceful termination."""
@@ -123,6 +126,8 @@ class ContainerManager:
     )
     self.P("Running command in container: {}".format(shell_cmd))
     # Execute the command and obtain a streaming iterator without blocking
+    # although detach is set to False, we can still stream logs and the exec_run is not
+    # blocking the calling thread
     exec_result = self.container.exec_run(["sh", "-c", shell_cmd], stream=True, detach=False)
     # Consume the iterator in a background thread so the main thread stays free
     self.log_thread = threading.Thread(
@@ -198,17 +203,30 @@ class ContainerManager:
 
   def poll_endpoint(self):
     """Poll the container's /edgenode endpoint and print the response."""
+    self.poll_count += 1
     url = "http://localhost:3000/edgenode"
     try:
-      resp = requests.get(url, timeout=5)
+      self.P(f"Polling endpoint {url} (count: {self.poll_count})...", color='b')
+      resp = requests.get(url, timeout=5)      
       status = resp.status_code
       # Truncate response text if it's very long
       text = resp.text
-      if len(text) > 200:
-        text = text[:200] + "..." 
-      self.P(f"GET {url} -> {status}, Response: {text}")
+      data = resp.json() if resp.status_code == 200 else {}
+      keys = data.keys() if isinstance(data, dict) else []
+      info = ""
+      if len(keys) > 0:        
+        for i in range(len(keys)):
+          info = "{}{}".format(info, data[keys[i]])
+          if i > 3:
+            break
+      else:
+        info = text[:100]
+      if status == 200:
+        self.P(f"GET {url} -> {status}, Response: {info}", color='g')
+      else:
+        self.P(f"GET {url} -> {status}, Error: {info}", color='r')
     except requests.RequestException as e:
-      self.P(f"GET {url} failed: {e}")
+      self.P(f"GET {url} failed: {e}", color='r')
     return
   
 
@@ -219,12 +237,15 @@ class ContainerManager:
     api_url = f"https://api.github.com/repos/{self.repo_owner}/{self.repo_name}/branches/{self.branch}"
     headers = {"Authorization": f"token {self.git_token}"} if self.git_token else {}
     try:
+      self.P(f"Commit check: {api_url}", color='b')
       resp = requests.get(api_url, headers=headers, timeout=5)
       data = resp.json() if resp.status_code == 200 else {}
+      if resp.status_code != 200:
+        self.P(f"[ERROR] Failed to fetch latest commit: {resp.text}", color='r') 
       latest_sha = data.get("commit", {}).get("sha", None)
       return latest_sha
     except Exception as e:
-      self.P(f"[WARN] Failed to fetch latest commit: {e}")
+      self.P(f"[WARN] Failed to fetch latest commit: {e}", color='r')
     return None
 
 
@@ -235,11 +256,11 @@ class ContainerManager:
         # Stop the container (gracefully)
         self.container.stop(timeout=5)
       except Exception as e:
-        self.P(f"[WARN] Error stopping container: {e}")
+        self.P(f"[WARN] Error stopping container: {e}", color='r')
       try:
         self.container.remove()
       except Exception as e:
-        self.P(f"[WARN] Error removing container: {e}")
+        self.P(f"[WARN] Error removing container: {e}", color='r')
       finally:
         self.container = None
     return
@@ -308,7 +329,11 @@ if __name__ == "__main__":
       repo_url=repo, 
       build_and_run_commands=commands, 
       image="node:18", 
-      poll_interval=10,
-      env={"EE_HOST_ID": "test1", "EE_HOST_ADDR": "0xai", "EE_HOST_ETH_ADDR": "0xBEEF"}    
+      poll_interval=30,
+      env={
+        "EE_HOST_ID": "test123", 
+        "EE_HOST_ADDR": "0xai", 
+        "EE_HOST_ETH_ADDR": "0xBEEF"
+      }
     )
     manager.run()
