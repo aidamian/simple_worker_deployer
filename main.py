@@ -257,6 +257,67 @@ class ContainerManager:
     return None
 
 
+  def get_latest_image_hash(self):
+    """
+    Get the latest identifier for the configured Docker image tag.
+
+    This method tries to resolve the remote content digest for ``self.image`` by
+    asking the Docker daemon to perform a metadata-only pull (if the image is
+    already up to date, no layers are re-downloaded). It returns the repo digest
+    (e.g., ``sha256:...``) when available; if not available, it falls back to the
+    local image ID.
+
+    Returns
+    -------
+    str or None
+      A digest like ``sha256:<hex>`` (preferred) or the local image ID. Returns
+      ``None`` if neither can be obtained.
+
+    Notes
+    -----
+    - Works for public and private registries as long as the Docker daemon has
+      credentials configured.
+    - This call contacts the registry; tune ``poll_interval`` appropriately.
+    """
+    try:
+      self.P(f"Image check: pulling '{self.image}' for metadata...", color='b')
+      img = self.docker_client.images.pull(self.image)
+      # docker-py may return Image or list[Image]
+      if isinstance(img, list) and img:
+        img = img[-1]
+      # Ensure attributes loaded
+      try:
+        img.reload()
+      except Exception:
+        pass
+      attrs = getattr(img, "attrs", {}) or {}
+      repo_digests = attrs.get("RepoDigests") or []
+      if repo_digests:
+        # 'repo@sha256:...'
+        digest = repo_digests[0].split("@")[-1]
+        return digest
+      # Fallback to image id (sha256:...)
+      return getattr(img, "id", None)
+    except Exception as e:
+      self.P(f"[WARN] Image pull failed: {e}", color='r')
+      # Fallback: check local image only
+      try:
+        img = self.docker_client.images.get(self.image)
+        try:
+          img.reload()
+        except Exception:
+          pass
+        attrs = getattr(img, "attrs", {}) or {}
+        repo_digests = attrs.get("RepoDigests") or []
+        if repo_digests:
+          digest = repo_digests[0].split("@")[-1]
+          return digest
+        return getattr(img, "id", None)
+      except Exception as e2:
+        self.P(f"[WARN] Could not get local image: {e2}", color='r')
+        return None
+
+
   def stop_container(self):
     """Stop and remove the Docker container if it is running."""
     if self.container:
@@ -278,6 +339,7 @@ class ContainerManager:
     """Run the container and monitor it, restarting on new commits and handling graceful shutdown."""
     self.P("Starting container manager...")
     self.current_commit = self.get_latest_commit()
+    self.current_image_hash = self.get_latest_image_hash()
     if self.current_commit:
       self.P(f"Latest commit on {self.branch}: {self.current_commit}")
 
@@ -292,13 +354,25 @@ class ContainerManager:
         self.poll_endpoint()
         # Check for new commits in the repository
         latest_commit = self.get_latest_commit()
+        trigger_restart = False
         if latest_commit and self.current_commit and latest_commit != self.current_commit:
           self.P(f"New commit detected ({latest_commit[:7]} != {self.current_commit[:7]}). Restarting container...")
           # Update current_commit to the new one
           self.current_commit = latest_commit
+          trigger_restart = True
+        
+        latest_image_hash = self.get_latest_image_hash()
+        if latest_image_hash and self.current_image_hash and latest_image_hash != self.current_image_hash:
+          self.P(f"New image detected ({latest_image_hash[:7]} != {self.current_image_hash[:7]}). Restarting container...")
+          # Update current_image_hash to the new one
+          self.current_image_hash = latest_image_hash
+          trigger_restart = True
+
+        if trigger_restart:
           # Stop and remove current container, and end its log thread
           self.restart_from_scratch()
           continue  # continue monitoring with new container
+        
         elif latest_commit:
           self.P(f"Latest commit on {self.branch}: {latest_commit} vs {self.current_commit}")
         # If container has stopped on its own (unexpectedly), break out to end the loop
